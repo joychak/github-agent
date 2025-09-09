@@ -1,0 +1,476 @@
+name: 'Strands GitHub Agent'
+description: 'AI-powered GitHub agent using Strands Agents SDK for autonomous repository management'
+author: 'Strands Agents'
+
+branding:
+  icon: 'bot'
+  color: 'blue'
+
+inputs:
+  # Core Task Configuration
+  task:
+    description: 'Specific task for the agent to perform'
+    required: true
+  
+  system_prompt:
+    description: 'Additional system prompt instructions for the agent'
+    required: false
+    default: ''
+  
+  # Model Configuration
+  provider:
+    description: 'Model provider (bedrock, openai, github, anthropic, litellm, llamaapi)'
+    required: false
+    default: 'bedrock'
+  
+  model:
+    description: 'Model ID to use'
+    required: false
+    default: 'us.anthropic.claude-sonnet-4-20250514-v1:0'
+  
+  max_tokens:
+    description: 'Maximum tokens for the model'
+    required: false
+    default: '32768'
+  
+  temperature:
+    description: 'Temperature for model generation (0.0-1.0)'
+    required: false
+    default: '1'
+  
+  # Tool Configuration
+  tools:
+    description: 'Comma-separated list of tools to enable'
+    required: false
+    default: 'current_time'
+  
+  # Authentication & Access
+  github_token:
+    description: 'GitHub token for API access'
+    required: false
+    default: ${{ github.token }}
+  
+  # AWS Configuration (for Bedrock)
+  aws_region:
+    description: 'AWS region for Bedrock'
+    required: false
+    default: 'us-west-2'
+  
+  aws_role_arn:
+    description: 'AWS role ARN for OIDC authentication'
+    required: false
+  
+  # OpenAI Configuration (if using OpenAI provider)
+  openai_api_key:
+    description: 'OpenAI API key'
+    required: false
+  
+  # GitHub Configuration (if using GitHub provider)
+  github_api_key:
+    description: 'GitHub API key (defaults to github_token if not provided)'
+    required: false
+  
+  # Anthropic Configuration (if using Anthropic provider)
+  anthropic_api_key:
+    description: 'Anthropic API key'
+    required: false
+  
+  # LiteLLM Configuration (if using LiteLLM provider)
+  litellm_api_key:
+    description: 'LiteLLM API key'
+    required: false
+  
+  litellm_base_url:
+    description: 'LiteLLM base URL'
+    required: false
+  
+  # LlamaAPI Configuration (if using LlamaAPI provider)
+  llamaapi_api_key:
+    description: 'LlamaAPI API key'
+    required: false
+  
+  # Knowledge Base Configuration
+  knowledge_base_id:
+    description: 'Strands Knowledge Base ID for memory'
+    required: false
+  
+  # Advanced Configuration
+  thinking_type:
+    description: 'Type of thinking mode (enabled, disabled)'
+    required: false
+    default: 'enabled'
+  
+  budget_tokens:
+    description: 'Budget tokens for thinking mode'
+    required: false
+    default: '2048'
+  
+  bypass_tool_consent:
+    description: 'Skip tool consent prompts'
+    required: false
+    default: 'true'
+  
+  # Slack Integration (optional)
+  slack_bot_token:
+    description: 'Slack bot token for notifications'
+    required: false
+  
+  slack_app_token:
+    description: 'Slack app token for Socket Mode'
+    required: false
+  
+  # Observability
+  langfuse_public_key:
+    description: 'Langfuse public key for observability'
+    required: false
+  
+  langfuse_secret_key:
+    description: 'Langfuse secret key for observability'
+    required: false
+  
+  langfuse_host:
+    description: 'Langfuse host URL'
+    required: false
+
+  # Agent Runner Configuration
+  agent_runner:
+    description: 'URL to custom agent_runner.py script. Falls back to repository variable AGENT_RUNNER, then default gist'
+    required: false
+
+outputs:
+  result:
+    description: 'Result from the agent execution'
+  
+  success:
+    description: 'Whether the agent execution was successful'
+  
+  error:
+    description: 'Error message if execution failed'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Use Homebrew Python 3.10
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        echo "/opt/homebrew/opt/python@3.10/libexec/bin" >> $GITHUB_PATH
+        echo "/opt/homebrew/bin" >> $GITHUB_PATH
+
+    - name: Set up Python
+      if: runner.os != 'macOS'
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-strands-agents-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-strands-agents-
+          ${{ runner.os }}-pip-
+
+    - name: Install Strands Agents
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Install Local Dependencies
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        pip install -r requirements-local.txt
+
+    - name: Configure Git
+      shell: bash
+      run: |
+        git config --global user.name "Strands Agent"
+        git config --global user.email "217235299+strands-agent@users.noreply.github.com"
+
+    - name: Configure AWS credentials
+      if: inputs.aws_role_arn != ''
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.aws_role_arn }}
+        role-session-name: GitHubActions-StrandsAgent-${{ github.run_id }}
+        aws-region: ${{ inputs.aws_region }}
+        mask-aws-account-id: true
+
+    - name: Download agent script
+      shell: bash
+      env:
+        # GitHub Configuration - Priority: Input > Repository Variable > Default Gist
+        AGENT_RUNNER: ${{ inputs.agent_runner || 'https://gist.githubusercontent.com/cagataycali/13875192bd1f892192e8c63be635ed4e/raw/0f06bdb2d4039c2bc768ec699efe2f058a59c947/agent_runner.py' }}
+      run: |
+        curl -o agent_runner.py $AGENT_RUNNER
+
+    - name: Run Strands Agent
+      shell: bash
+      env:
+        # GitHub Configuration
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        GITHUB_CONTEXT: ${{ toJson(github) }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        GITHUB_EVENT_NAME: ${{ github.event_name }}
+        GITHUB_ACTOR: ${{ github.actor }}
+        
+        # Model Configuration
+        STRANDS_PROVIDER: ${{ inputs.provider }}
+        STRANDS_MODEL_ID: ${{ inputs.model }}
+        STRANDS_MAX_TOKENS: ${{ inputs.max_tokens }}
+        STRANDS_TEMPERATURE: ${{ inputs.temperature }}
+        STRANDS_THINKING_TYPE: ${{ inputs.thinking_type }}
+        STRANDS_BUDGET_TOKENS: ${{ inputs.budget_tokens }}
+        
+        # Tool Configuration
+        STRANDS_TOOLS: ${{ inputs.tools }}
+        BYPASS_TOOL_CONSENT: ${{ inputs.bypass_tool_consent }}
+        STRANDS_TOOL_CONSOLE_MODE: "enabled"
+        
+        # Task Configuration
+        INPUT_TASK: ${{ inputs.task }}
+        INPUT_SYSTEM_PROMPT: ${{ inputs.system_prompt }}
+        
+        # AWS Configuration
+        AWS_REGION: ${{ inputs.aws_region }}
+        
+        # OpenAI Configuration
+        OPENAI_API_KEY: ${{ inputs.openai_api_key }}
+        
+        # GitHub Configuration
+        GITHUB_API_KEY: ${{ inputs.github_api_key || inputs.github_token }}
+        
+        # Anthropic Configuration
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        
+        # LiteLLM Configuration
+        LITELLM_API_KEY: ${{ inputs.litellm_api_key }}
+        LITELLM_BASE_URL: ${{ inputs.litellm_base_url }}
+        
+        # LlamaAPI Configuration
+        LLAMAAPI_API_KEY: ${{ inputs.llamaapi_api_key }}
+        
+        # Knowledge Base
+        STRANDS_KNOWLEDGE_BASE_ID: ${{ inputs.knowledge_base_id }}
+        
+        # Slack Configuration
+        SLACK_BOT_TOKEN: ${{ inputs.slack_bot_token }}
+        SLACK_APP_TOKEN: ${{ inputs.slack_app_token }}
+        
+        # Observability
+        LANGFUSE_PUBLIC_KEY: ${{ inputs.langfuse_public_key }}
+        LANGFUSE_SECRET_KEY: ${{ inputs.langfuse_secret_key }}
+        LANGFUSE_HOST: ${{ inputs.langfuse_host }}
+      run: |
+        AGENT_INPUT="$INPUT_TASK"
+        
+        echo "🤖 Starting Strands Agent..."
+        echo "📝 Task: $AGENT_INPUT"
+        echo "🧠 Model: $STRANDS_MODEL_ID"
+        echo "🔧 Tools: $STRANDS_TOOLS"
+        
+        # Run the agent
+        python agent_runner.py "$AGENT_INPUT"
+
+
+
+.github/workflows/agent.yml (Customers will have this)
+
+Consumer will define their agent.yml files, attached an example file below:
+
+name: Agent
+
+on:
+  # schedule:
+    # Run every hour # TODO: modify to every week
+    # - cron: '0 * * * *'
+  issues:
+    types: [opened, edited, closed, reopened, assigned, unassigned, labeled, unlabeled]
+  issue_comment:
+    types: [created, edited, deleted]
+  pull_request:
+    types: [opened, closed, edited, reopened, synchronize, ready_for_review]
+  pull_request_review:
+    types: [submitted, edited]
+  discussion:
+    types: [created, edited, answered, unanswered, category_changed, labeled, unlabeled, transferred, pinned, unpinned, locked, unlocked]
+  discussion_comment:
+    types: [created, edited, deleted]
+  pull_request_review_comment:
+    types: [created, edited]
+  workflow_dispatch:
+    inputs:
+      message:
+        description: 'Message to pass to the agent'
+        required: false
+        default: 'What are my active issues?'
+        type: string
+      task:
+        description: 'Specific task for the agent to perform'
+        required: false
+        type: string
+      system_prompt:
+        description: 'Additional system prompt instructions'
+        required: false
+        type: string
+      tools:
+        description: 'Comma-separated list of tools to enable for the agent'
+        required: false
+        default: 'current_time,http_request,load_tool,python_repl,shell,think,file_read,file_write,editor,use_agent,environment,memory,retrieve,use_aws'
+        type: string
+      provider:
+        description: 'Model provider'
+        default: "bedrock"
+        required: false
+        type: choice
+        options:
+          - bedrock
+          - openai
+          - github
+          - anthropic
+          - litellm
+          - llamaapi
+      model:
+        description: 'Model ID'
+        default: "us.anthropic.claude-sonnet-4-20250514-v1:0"
+        required: false
+        type: string
+      max_tokens:
+        description: 'Max tokens'
+        default: "32768"
+        required: false
+        type: string
+      temperature:
+        description: 'Temperature (0.0-1.0)'
+        default: "1"
+        required: false
+        type: string
+
+permissions: write-all
+
+jobs:
+  check-permissions:
+    runs-on: ubuntu-latest
+    outputs:
+      authorized: ${{ steps.check.outputs.authorized }}
+    steps:
+      - name: Check user authorization
+        id: check  
+        run: |
+          # 🔐 CONFIGURE AUTHORIZED USERS HERE
+          # Add your authorized usernames (comma-separated)
+          AUTHORIZED_USERS="${{ secrets.AUTHORIZED_USERS }}"
+          
+          echo "Checking authorization for user: ${{ github.actor }}"
+          
+          # Check if the triggering user is in the authorized list
+          if [[ ",$AUTHORIZED_USERS," == *",${{ github.actor }},"* ]]; then
+            echo "✅ User ${{ github.actor }} is authorized"
+            echo "authorized=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ User ${{ github.actor }} is NOT authorized"
+            echo "Authorized users: $AUTHORIZED_USERS"
+            echo "authorized=false" >> $GITHUB_OUTPUT
+          fi
+
+  run-internal-agent:
+    needs: check-permissions
+    runs-on: ubuntu-latest
+    # Only run if user is authorized
+    if: needs.check-permissions.outputs.authorized == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PAT_TOKEN }} # Remove this line if you don't want to give additional credentials
+
+      - name: Run Strands Agent
+        uses: ./
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }} # Remove this line if you don't want to give additional credentials
+          STRANDS_ADDITIONAL_REQUEST_FIELDS: '{"anthropic_beta": ["interleaved-thinking-2025-05-14", "context-1m-2025-08-07"], "thinking": {"type": "enabled", "budget_tokens": 2048}}'
+        with:
+          task: |
+            ${{ 
+              github.event.inputs.task ||
+              github.event.inputs.message ||
+              'Handle manual request from authorized user'
+            }}
+
+          # Model configuration
+          provider: ${{ github.event.inputs.provider || vars.STRANDS_PROVIDER || 'bedrock' }}
+          model: ${{ github.event.inputs.model || vars.STRANDS_MODEL_ID || 'us.anthropic.claude-opus-4-20250514-v1:0' }}
+          max_tokens: ${{ github.event.inputs.max_tokens || vars.STRANDS_MAX_TOKENS || '32768' }}
+          temperature: ${{ github.event.inputs.temperature || vars.STRANDS_TEMPERATURE || '1' }}
+
+          # System prompt configuration
+          system_prompt: |
+            ${{ github.event.inputs.system_prompt || vars.SYSTEM_PROMPT || 'You are a restricted GitHub agent for this repository, powered by Strands Agents SDK. Only authorized users can trigger your execution.' }}
+
+            ${{ vars.INPUT_SYSTEM_PROMPT }}
+
+          # Tool configuration
+          tools: ${{ github.event.inputs.tools || vars.STRANDS_TOOLS || 'current_time,editor,file_read,file_write,http_request,python_repl,shell,think,create_subagent,system_prompt,fetch_github_tool,use_github,list_issues,list_pull_requests,add_comment,retrieve,store_in_kb' }}
+
+          # Authentication
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+          # AWS configuration
+          aws_role_arn: ${{ secrets.AWS_ROLE_ARN }}
+          aws_region: ${{ secrets.AWS_REGION || 'us-west-2' }}
+
+          # OpenAI configuration
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+
+          # GitHub configuration
+          github_api_key: ${{ secrets.GITHUB_API_KEY }}
+
+          # Anthropic configuration  
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+          # LiteLLM configuration
+          litellm_api_key: ${{ secrets.LITELLM_API_KEY }}
+          litellm_base_url: ${{ secrets.LITELLM_BASE_URL }}
+
+          # LlamaAPI configuration
+          llamaapi_api_key: ${{ secrets.LLAMAAPI_API_KEY }}
+
+          # Knowledge base
+          knowledge_base_id: ${{ secrets.STRANDS_KNOWLEDGE_BASE_ID }}
+
+          # Advanced configuration
+          thinking_type: ${{ vars.STRANDS_THINKING_TYPE || 'enabled' }}
+          budget_tokens: ${{ vars.STRANDS_BUDGET_TOKENS || 2048 }}
+          bypass_tool_consent: "true"
+
+          # Slack integration
+          slack_bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
+          slack_app_token: ${{ secrets.SLACK_APP_TOKEN }}
+
+          # Observability
+          langfuse_public_key: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          langfuse_secret_key: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          langfuse_host: ${{ secrets.LANGFUSE_HOST }}
+
+  unauthorized-notice:
+    needs: check-permissions
+    runs-on: ubuntu-latest
+    # Only run if user is NOT authorized
+    if: needs.check-permissions.outputs.authorized == 'false'
+    steps:
+      - name: Unauthorized access attempt
+        run: |
+          echo "🚫 UNAUTHORIZED ACCESS ATTEMPT"
+          echo "User: ${{ github.actor }}"
+          echo "Repository: ${{ github.repository }}"
+          echo "Event: ${{ github.event_name }}"
+          echo "Time: $(date)"
+          echo ""
+          echo "This incident has been logged."
+          echo "Contact repository administrators for access."
+          exit 1
+
+
