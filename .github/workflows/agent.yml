@@ -108,7 +108,7 @@ jobs:
         uses: ./
         env:
           PAT_TOKEN: ${{ secrets.PAT_TOKEN }} # Remove this line if you don't want to give additional credentials
-          STRANDS_ADDITIONAL_REQUEST_FIELDS: '{"anthropic_beta": ["interleaved-thinking-2025-05-14", "context-1m-2025-08-07"], "thinking": {"type": "enabled", "budget_tokens": 2048}}'
+          #STRANDS_ADDITIONAL_REQUEST_FIELDS: '{"anthropic_beta": ["interleaved-thinking-2025-05-14", "context-1m-2025-08-07"], "thinking": {"type": "enabled", "budget_tokens": 2048}}'
         with:
           task: |
             ${{ 
